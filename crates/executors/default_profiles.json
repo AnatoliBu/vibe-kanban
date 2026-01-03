@@ -228,6 +228,14 @@
           "model": "glm-4.6"
         }
       }
+    },
+    "CUSTOM": {
+      "DEFAULT": {
+        "CUSTOM": {
+          "command": "echo 'Configure your custom CLI agent'",
+          "prompt_mode": "STDIN"
+        }
+      }
     }
   }
 }
