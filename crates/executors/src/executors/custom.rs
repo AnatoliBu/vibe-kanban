@@ -136,7 +136,7 @@ impl Custom {
                 // Prompt will be written to stdin after spawn
             }
             PromptMode::Arg => {
-                // prompt_arg is validated in validate() method
+                // SAFETY: prompt_arg is guaranteed to exist by validate() method called at spawn
                 let arg = self.prompt_arg.as_ref().unwrap();
                 command_builder = command_builder.extend_params([arg.clone(), combined_prompt.clone()]);
             }
@@ -414,7 +414,7 @@ mod tests {
             cmd: CmdOverrides::default(),
             approvals: None,
         };
-        assert_eq!(custom.acp, true);
+        assert!(custom.acp);
     }
 
     #[test]
@@ -429,7 +429,7 @@ mod tests {
             cmd: CmdOverrides::default(),
             approvals: None,
         };
-        assert_eq!(custom.acp, false);
+        assert!(!custom.acp);
     }
 
     #[test]
