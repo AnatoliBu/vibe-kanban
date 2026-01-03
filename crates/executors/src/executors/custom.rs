@@ -91,6 +91,22 @@ pub struct Custom {
 }
 
 impl Custom {
+    /// Validate configuration at load time
+    /// Returns an error if the configuration is invalid
+    pub fn validate(&self) -> Result<(), String> {
+        // Validate command is not empty or whitespace-only
+        if self.command.trim().is_empty() {
+            return Err("command field cannot be empty or whitespace-only".to_string());
+        }
+
+        // Validate prompt_arg requirement for ARG mode
+        if self.prompt_mode == PromptMode::Arg && self.prompt_arg.is_none() {
+            return Err("prompt_arg is required when prompt_mode is ARG".to_string());
+        }
+
+        Ok(())
+    }
+
     fn build_command_builder(&self) -> CommandBuilder {
         let builder = CommandBuilder::new(&self.command);
         apply_overrides(builder, &self.cmd)
@@ -120,14 +136,9 @@ impl Custom {
                 // Prompt will be written to stdin after spawn
             }
             PromptMode::Arg => {
-                if let Some(arg) = &self.prompt_arg {
-                    command_builder = command_builder.extend_params([arg.clone(), combined_prompt.clone()]);
-                } else {
-                    return Err(ExecutorError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "prompt_arg is required when prompt_mode is ARG",
-                    )));
-                }
+                // prompt_arg is validated in validate() method
+                let arg = self.prompt_arg.as_ref().unwrap();
+                command_builder = command_builder.extend_params([arg.clone(), combined_prompt.clone()]);
             }
             PromptMode::LastPositional => {
                 command_builder = command_builder.extend_params([combined_prompt.clone()]);
@@ -158,12 +169,12 @@ impl Custom {
         let mut child = command.group_spawn()?;
 
         // Write prompt to stdin if using stdin mode
-        if matches!(self.prompt_mode, PromptMode::Stdin) {
-            if let Some(mut stdin) = child.inner().stdin.take() {
-                stdin.write_all(combined_prompt.as_bytes()).await?;
-                stdin.flush().await?;
-                drop(stdin);
-            }
+        if matches!(self.prompt_mode, PromptMode::Stdin)
+            && let Some(mut stdin) = child.inner().stdin.take()
+        {
+            stdin.write_all(combined_prompt.as_bytes()).await?;
+            stdin.flush().await?;
+            drop(stdin);
         }
 
         Ok(SpawnedChild::from(child))
@@ -230,6 +241,12 @@ impl StandardCodingAgentExecutor for Custom {
         prompt: &str,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
+        // Validate configuration before spawning
+        self.validate().map_err(|e| ExecutorError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            e,
+        )))?;
+
         if self.acp {
             self.spawn_acp(current_dir, prompt, env).await
         } else {
@@ -271,5 +288,204 @@ impl StandardCodingAgentExecutor for Custom {
         // Custom agents are always considered "found" since the command
         // existence is checked at runtime
         AvailabilityInfo::InstallationFound
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_empty_command_fails() {
+        let custom = Custom {
+            command: "".to_string(),
+            prompt_mode: PromptMode::Stdin,
+            prompt_arg: None,
+            acp: false,
+            session_namespace: None,
+            append_prompt: AppendPrompt::default(),
+            cmd: CmdOverrides::default(),
+            approvals: None,
+        };
+        assert!(custom.validate().is_err(), "Empty command should fail validation");
+    }
+
+    #[test]
+    fn test_validate_whitespace_command_fails() {
+        let custom = Custom {
+            command: "   ".to_string(),
+            prompt_mode: PromptMode::Stdin,
+            prompt_arg: None,
+            acp: false,
+            session_namespace: None,
+            append_prompt: AppendPrompt::default(),
+            cmd: CmdOverrides::default(),
+            approvals: None,
+        };
+        assert!(custom.validate().is_err(), "Whitespace-only command should fail validation");
+    }
+
+    #[test]
+    fn test_validate_valid_command() {
+        let custom = Custom {
+            command: "echo hello".to_string(),
+            prompt_mode: PromptMode::Stdin,
+            prompt_arg: None,
+            acp: false,
+            session_namespace: None,
+            append_prompt: AppendPrompt::default(),
+            cmd: CmdOverrides::default(),
+            approvals: None,
+        };
+        assert!(custom.validate().is_ok(), "Valid command should pass validation");
+    }
+
+    #[test]
+    fn test_validate_arg_mode_without_prompt_arg_fails() {
+        let custom = Custom {
+            command: "tool".to_string(),
+            prompt_mode: PromptMode::Arg,
+            prompt_arg: None,
+            acp: false,
+            session_namespace: None,
+            append_prompt: AppendPrompt::default(),
+            cmd: CmdOverrides::default(),
+            approvals: None,
+        };
+        assert!(custom.validate().is_err(), "ARG mode without prompt_arg should fail");
+    }
+
+    #[test]
+    fn test_validate_arg_mode_with_prompt_arg_succeeds() {
+        let custom = Custom {
+            command: "tool".to_string(),
+            prompt_mode: PromptMode::Arg,
+            prompt_arg: Some("--message".to_string()),
+            acp: false,
+            session_namespace: None,
+            append_prompt: AppendPrompt::default(),
+            cmd: CmdOverrides::default(),
+            approvals: None,
+        };
+        assert!(custom.validate().is_ok(), "ARG mode with prompt_arg should succeed");
+    }
+
+    #[test]
+    fn test_stdin_mode_default() {
+        let custom = Custom {
+            command: "tool".to_string(),
+            prompt_mode: PromptMode::Stdin,
+            prompt_arg: None,
+            acp: false,
+            session_namespace: None,
+            append_prompt: AppendPrompt::default(),
+            cmd: CmdOverrides::default(),
+            approvals: None,
+        };
+        assert_eq!(custom.prompt_mode, PromptMode::Stdin);
+        assert!(custom.validate().is_ok());
+    }
+
+    #[test]
+    fn test_last_positional_mode() {
+        let custom = Custom {
+            command: "tool".to_string(),
+            prompt_mode: PromptMode::LastPositional,
+            prompt_arg: None,
+            acp: false,
+            session_namespace: None,
+            append_prompt: AppendPrompt::default(),
+            cmd: CmdOverrides::default(),
+            approvals: None,
+        };
+        assert_eq!(custom.prompt_mode, PromptMode::LastPositional);
+        assert!(custom.validate().is_ok());
+    }
+
+    #[test]
+    fn test_acp_mode_enabled() {
+        let custom = Custom {
+            command: "tool".to_string(),
+            prompt_mode: PromptMode::Stdin,
+            prompt_arg: None,
+            acp: true,
+            session_namespace: None,
+            append_prompt: AppendPrompt::default(),
+            cmd: CmdOverrides::default(),
+            approvals: None,
+        };
+        assert_eq!(custom.acp, true);
+    }
+
+    #[test]
+    fn test_acp_mode_disabled_default() {
+        let custom = Custom {
+            command: "tool".to_string(),
+            prompt_mode: PromptMode::Stdin,
+            prompt_arg: None,
+            acp: false,
+            session_namespace: None,
+            append_prompt: AppendPrompt::default(),
+            cmd: CmdOverrides::default(),
+            approvals: None,
+        };
+        assert_eq!(custom.acp, false);
+    }
+
+    #[test]
+    fn test_session_namespace_custom() {
+        let custom = Custom {
+            command: "tool".to_string(),
+            prompt_mode: PromptMode::Stdin,
+            prompt_arg: None,
+            acp: true,
+            session_namespace: Some("my_sessions".to_string()),
+            append_prompt: AppendPrompt::default(),
+            cmd: CmdOverrides::default(),
+            approvals: None,
+        };
+        assert_eq!(custom.session_namespace, Some("my_sessions".to_string()));
+    }
+
+    #[test]
+    fn test_harness_default_namespace() {
+        let custom = Custom {
+            command: "tool".to_string(),
+            prompt_mode: PromptMode::Stdin,
+            prompt_arg: None,
+            acp: true,
+            session_namespace: None,
+            append_prompt: AppendPrompt::default(),
+            cmd: CmdOverrides::default(),
+            approvals: None,
+        };
+        let _harness = custom.harness();
+        // Verify harness creation works
+    }
+
+    #[test]
+    fn test_build_command_builder() {
+        let custom = Custom {
+            command: "npx -y @cline/cli".to_string(),
+            prompt_mode: PromptMode::Stdin,
+            prompt_arg: None,
+            acp: false,
+            session_namespace: None,
+            append_prompt: AppendPrompt::default(),
+            cmd: CmdOverrides::default(),
+            approvals: None,
+        };
+        let _builder = custom.build_command_builder();
+        // Verify it doesn't panic
+    }
+
+    #[test]
+    fn test_deserialization_basic() {
+        let json = r#"{"command": "echo hello"}"#;
+        let result: Result<Custom, _> = serde_json::from_str(json);
+        assert!(result.is_ok(), "Valid command should deserialize");
+        let custom = result.unwrap();
+        assert_eq!(custom.command, "echo hello");
+        assert_eq!(custom.prompt_mode, PromptMode::Stdin);
     }
 }
