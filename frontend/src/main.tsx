@@ -71,7 +71,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           showDialog
         >
           <ClickToComponent />
-          <VibeKanbanWebCompanion />
+          {import.meta.env.DEV ? <VibeKanbanWebCompanion /> : null}
           <App />
           {/*<TanStackDevtools plugins={[FormDevtoolsPlugin()]} />*/}
           {/* <ReactQueryDevtools initialIsOpen={false} /> */}
