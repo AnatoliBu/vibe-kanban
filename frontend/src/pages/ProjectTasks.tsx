@@ -756,17 +756,20 @@ export function ProjectTasks() {
       const task = tasksById[draggedTaskId];
       if (!task || task.status === newStatus) return;
 
-      try {
-        await tasksApi.update(draggedTaskId, {
-          title: task.title,
-          description: task.description,
-          status: newStatus,
-          parent_workspace_id: task.parent_workspace_id,
-          image_ids: null,
-        });
-      } catch (err) {
-        console.error('Failed to update task status:', err);
-      }
+        try {
+          await tasksApi.update(draggedTaskId, {
+            title: task.title,
+            description: task.description,
+            status: newStatus,
+            track: null,
+            parent_workspace_id: task.parent_workspace_id,
+            parent_task_id: task.parent_task_id,
+            phase_key: task.phase_key,
+            image_ids: null,
+          });
+        } catch (err) {
+          console.error('Failed to update task status:', err);
+        }
     },
     [tasksById]
   );

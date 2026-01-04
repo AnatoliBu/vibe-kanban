@@ -22,6 +22,33 @@ pub enum TaskStatus {
     Cancelled,
 }
 
+#[derive(
+    Debug, Clone, Copy, Type, Serialize, Deserialize, PartialEq, Eq, TS, EnumString, Display, Default,
+)]
+#[sqlx(type_name = "TEXT", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum TaskTrack {
+    #[default]
+    Quick,
+    Bmad,
+    Enterprise,
+}
+
+#[derive(Debug, Clone, Copy, Type, Serialize, Deserialize, PartialEq, Eq, TS, EnumString, Display)]
+#[sqlx(type_name = "TEXT", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum PhaseKey {
+    Intake,
+    Prd,
+    Arch,
+    Stories,
+    Impl,
+    Qa,
+    Review,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize, TS)]
 pub struct Task {
     pub id: Uuid,
@@ -29,7 +56,10 @@ pub struct Task {
     pub title: String,
     pub description: Option<String>,
     pub status: TaskStatus,
+    pub track: TaskTrack,
     pub parent_workspace_id: Option<Uuid>, // Foreign key to parent Workspace
+    pub parent_task_id: Option<Uuid>, // Foreign key to parent Task (task-level hierarchy)
+    pub phase_key: Option<PhaseKey>, // Workflow phase key (BMAD/Enterprise)
     pub shared_task_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -71,7 +101,10 @@ pub struct CreateTask {
     pub title: String,
     pub description: Option<String>,
     pub status: Option<TaskStatus>,
+    pub track: Option<TaskTrack>,
     pub parent_workspace_id: Option<Uuid>,
+    pub parent_task_id: Option<Uuid>,
+    pub phase_key: Option<PhaseKey>,
     pub image_ids: Option<Vec<Uuid>>,
     pub shared_task_id: Option<Uuid>,
 }
@@ -87,7 +120,10 @@ impl CreateTask {
             title,
             description,
             status: Some(TaskStatus::Todo),
+            track: None,
             parent_workspace_id: None,
+            parent_task_id: None,
+            phase_key: None,
             image_ids: None,
             shared_task_id: None,
         }
@@ -105,7 +141,10 @@ impl CreateTask {
             title,
             description,
             status: Some(status),
+            track: None,
             parent_workspace_id: None,
+            parent_task_id: None,
+            phase_key: None,
             image_ids: None,
             shared_task_id: Some(shared_task_id),
         }
@@ -117,7 +156,10 @@ pub struct UpdateTask {
     pub title: Option<String>,
     pub description: Option<String>,
     pub status: Option<TaskStatus>,
+    pub track: Option<TaskTrack>,
     pub parent_workspace_id: Option<Uuid>,
+    pub parent_task_id: Option<Uuid>,
+    pub phase_key: Option<PhaseKey>,
     pub image_ids: Option<Vec<Uuid>>,
 }
 
@@ -145,10 +187,13 @@ impl Task {
   t.title,
   t.description,
   t.status                        AS "status!: TaskStatus",
+  t.track                         AS "track!: TaskTrack",
   t.parent_workspace_id           AS "parent_workspace_id: Uuid",
+  t.parent_task_id                AS "parent_task_id: Uuid",
+  t.phase_key                     AS "phase_key: PhaseKey",
   t.shared_task_id                AS "shared_task_id: Uuid",
-  t.created_at                    AS "created_at!: DateTime<Utc>",
-  t.updated_at                    AS "updated_at!: DateTime<Utc>",
+  t.created_at                    AS "created_at!: DateTime<Utc>",        
+  t.updated_at                    AS "updated_at!: DateTime<Utc>",        
 
   CASE WHEN EXISTS (
     SELECT 1
@@ -192,17 +237,20 @@ ORDER BY t.created_at DESC"#,
         let tasks = records
             .into_iter()
             .map(|rec| TaskWithAttemptStatus {
-                task: Task {
-                    id: rec.id,
-                    project_id: rec.project_id,
-                    title: rec.title,
-                    description: rec.description,
-                    status: rec.status,
-                    parent_workspace_id: rec.parent_workspace_id,
-                    shared_task_id: rec.shared_task_id,
-                    created_at: rec.created_at,
-                    updated_at: rec.updated_at,
-                },
+                 task: Task {
+                     id: rec.id,
+                     project_id: rec.project_id,
+                     title: rec.title,
+                     description: rec.description,
+                     status: rec.status,
+                     track: rec.track,
+                     parent_workspace_id: rec.parent_workspace_id,
+                     parent_task_id: rec.parent_task_id,
+                     phase_key: rec.phase_key,
+                     shared_task_id: rec.shared_task_id,
+                     created_at: rec.created_at,
+                     updated_at: rec.updated_at,
+                 },
                 has_in_progress_attempt: rec.has_in_progress_attempt != 0,
                 last_attempt_failed: rec.last_attempt_failed != 0,
                 executor: rec.executor,
@@ -215,7 +263,7 @@ ORDER BY t.created_at DESC"#,
     pub async fn find_by_id(pool: &SqlitePool, id: Uuid) -> Result<Option<Self>, sqlx::Error> {
         sqlx::query_as!(
             Task,
-            r#"SELECT id as "id!: Uuid", project_id as "project_id!: Uuid", title, description, status as "status!: TaskStatus", parent_workspace_id as "parent_workspace_id: Uuid", shared_task_id as "shared_task_id: Uuid", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>"
+            r#"SELECT id as "id!: Uuid", project_id as "project_id!: Uuid", title, description, status as "status!: TaskStatus", track as "track!: TaskTrack", parent_workspace_id as "parent_workspace_id: Uuid", parent_task_id as "parent_task_id: Uuid", phase_key as "phase_key: PhaseKey", shared_task_id as "shared_task_id: Uuid", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>"
                FROM tasks
                WHERE id = $1"#,
             id
@@ -227,13 +275,39 @@ ORDER BY t.created_at DESC"#,
     pub async fn find_by_rowid(pool: &SqlitePool, rowid: i64) -> Result<Option<Self>, sqlx::Error> {
         sqlx::query_as!(
             Task,
-            r#"SELECT id as "id!: Uuid", project_id as "project_id!: Uuid", title, description, status as "status!: TaskStatus", parent_workspace_id as "parent_workspace_id: Uuid", shared_task_id as "shared_task_id: Uuid", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>"
+            r#"SELECT id as "id!: Uuid", project_id as "project_id!: Uuid", title, description, status as "status!: TaskStatus", track as "track!: TaskTrack", parent_workspace_id as "parent_workspace_id: Uuid", parent_task_id as "parent_task_id: Uuid", phase_key as "phase_key: PhaseKey", shared_task_id as "shared_task_id: Uuid", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>"
                FROM tasks
                WHERE rowid = $1"#,
             rowid
         )
         .fetch_optional(pool)
         .await
+    }
+
+    /// Find multiple tasks by their IDs in a single query
+    pub async fn find_by_ids<'e, E>(
+        executor: E,
+        ids: &[Uuid],
+    ) -> Result<Vec<Self>, sqlx::Error>
+    where
+        E: Executor<'e, Database = Sqlite>,
+    {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Use QueryBuilder for safe dynamic query construction
+        let mut query_builder = sqlx::QueryBuilder::<Sqlite>::new(
+            "SELECT id, project_id, title, description, status, track, parent_workspace_id, parent_task_id, phase_key, shared_task_id, created_at, updated_at FROM tasks WHERE id IN ("
+        );
+
+        let mut separated = query_builder.separated(", ");
+        for id in ids {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+
+        query_builder.build_query_as::<Task>().fetch_all(executor).await
     }
 
     pub async fn find_by_shared_task_id<'e, E>(
@@ -245,7 +319,7 @@ ORDER BY t.created_at DESC"#,
     {
         sqlx::query_as!(
             Task,
-            r#"SELECT id as "id!: Uuid", project_id as "project_id!: Uuid", title, description, status as "status!: TaskStatus", parent_workspace_id as "parent_workspace_id: Uuid", shared_task_id as "shared_task_id: Uuid", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>"
+            r#"SELECT id as "id!: Uuid", project_id as "project_id!: Uuid", title, description, status as "status!: TaskStatus", track as "track!: TaskTrack", parent_workspace_id as "parent_workspace_id: Uuid", parent_task_id as "parent_task_id: Uuid", phase_key as "phase_key: PhaseKey", shared_task_id as "shared_task_id: Uuid", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>"
                FROM tasks
                WHERE shared_task_id = $1
                LIMIT 1"#,
@@ -258,7 +332,7 @@ ORDER BY t.created_at DESC"#,
     pub async fn find_all_shared(pool: &SqlitePool) -> Result<Vec<Self>, sqlx::Error> {
         sqlx::query_as!(
             Task,
-            r#"SELECT id as "id!: Uuid", project_id as "project_id!: Uuid", title, description, status as "status!: TaskStatus", parent_workspace_id as "parent_workspace_id: Uuid", shared_task_id as "shared_task_id: Uuid", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>"
+            r#"SELECT id as "id!: Uuid", project_id as "project_id!: Uuid", title, description, status as "status!: TaskStatus", track as "track!: TaskTrack", parent_workspace_id as "parent_workspace_id: Uuid", parent_task_id as "parent_task_id: Uuid", phase_key as "phase_key: PhaseKey", shared_task_id as "shared_task_id: Uuid", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>"
                FROM tasks
                WHERE shared_task_id IS NOT NULL"#
         )
@@ -272,17 +346,21 @@ ORDER BY t.created_at DESC"#,
         task_id: Uuid,
     ) -> Result<Self, sqlx::Error> {
         let status = data.status.clone().unwrap_or_default();
+        let track = data.track.unwrap_or_default();
         sqlx::query_as!(
             Task,
-            r#"INSERT INTO tasks (id, project_id, title, description, status, parent_workspace_id, shared_task_id)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)
-               RETURNING id as "id!: Uuid", project_id as "project_id!: Uuid", title, description, status as "status!: TaskStatus", parent_workspace_id as "parent_workspace_id: Uuid", shared_task_id as "shared_task_id: Uuid", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>""#,
+            r#"INSERT INTO tasks (id, project_id, title, description, status, track, parent_workspace_id, parent_task_id, phase_key, shared_task_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+               RETURNING id as "id!: Uuid", project_id as "project_id!: Uuid", title, description, status as "status!: TaskStatus", track as "track!: TaskTrack", parent_workspace_id as "parent_workspace_id: Uuid", parent_task_id as "parent_task_id: Uuid", phase_key as "phase_key: PhaseKey", shared_task_id as "shared_task_id: Uuid", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>""#,
             task_id,
             data.project_id,
             data.title,
             data.description,
             status,
+            track,
             data.parent_workspace_id,
+            data.parent_task_id,
+            data.phase_key,
             data.shared_task_id
         )
         .fetch_one(pool)
@@ -303,7 +381,7 @@ ORDER BY t.created_at DESC"#,
             r#"UPDATE tasks
                SET title = $3, description = $4, status = $5, parent_workspace_id = $6
                WHERE id = $1 AND project_id = $2
-               RETURNING id as "id!: Uuid", project_id as "project_id!: Uuid", title, description, status as "status!: TaskStatus", parent_workspace_id as "parent_workspace_id: Uuid", shared_task_id as "shared_task_id: Uuid", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>""#,
+               RETURNING id as "id!: Uuid", project_id as "project_id!: Uuid", title, description, status as "status!: TaskStatus", track as "track!: TaskTrack", parent_workspace_id as "parent_workspace_id: Uuid", parent_task_id as "parent_task_id: Uuid", phase_key as "phase_key: PhaseKey", shared_task_id as "shared_task_id: Uuid", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>""#,
             id,
             project_id,
             title,
@@ -446,7 +524,7 @@ ORDER BY t.created_at DESC"#,
         // Find only child tasks that have this workspace as their parent
         sqlx::query_as!(
             Task,
-            r#"SELECT id as "id!: Uuid", project_id as "project_id!: Uuid", title, description, status as "status!: TaskStatus", parent_workspace_id as "parent_workspace_id: Uuid", shared_task_id as "shared_task_id: Uuid", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>"
+            r#"SELECT id as "id!: Uuid", project_id as "project_id!: Uuid", title, description, status as "status!: TaskStatus", track as "track!: TaskTrack", parent_workspace_id as "parent_workspace_id: Uuid", parent_task_id as "parent_task_id: Uuid", phase_key as "phase_key: PhaseKey", shared_task_id as "shared_task_id: Uuid", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>"
                FROM tasks
                WHERE parent_workspace_id = $1
                ORDER BY created_at DESC"#,
@@ -454,6 +532,52 @@ ORDER BY t.created_at DESC"#,
         )
         .fetch_all(pool)
         .await
+    }
+
+    pub async fn find_children_by_task_id(
+        pool: &SqlitePool,
+        parent_task_id: Uuid,
+    ) -> Result<Vec<Self>, sqlx::Error> {
+        sqlx::query_as!(
+            Task,
+            r#"SELECT id as "id!: Uuid", project_id as "project_id!: Uuid", title, description, status as "status!: TaskStatus", track as "track!: TaskTrack", parent_workspace_id as "parent_workspace_id: Uuid", parent_task_id as "parent_task_id: Uuid", phase_key as "phase_key: PhaseKey", shared_task_id as "shared_task_id: Uuid", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>"
+               FROM tasks
+               WHERE parent_task_id = $1
+               ORDER BY
+                 CASE phase_key
+                   WHEN 'intake' THEN 0
+                   WHEN 'prd' THEN 1
+                   WHEN 'arch' THEN 2
+                   WHEN 'stories' THEN 3
+                   WHEN 'impl' THEN 4
+                   WHEN 'qa' THEN 5
+                   WHEN 'review' THEN 6
+                   ELSE 999
+                 END,
+                 created_at DESC"#,
+            parent_task_id,
+        )
+        .fetch_all(pool)
+        .await
+    }
+
+    pub async fn find_child_ids_by_task_id<'e, E>(
+        executor: E,
+        parent_task_id: Uuid,
+    ) -> Result<Vec<Uuid>, sqlx::Error>
+    where
+        E: Executor<'e, Database = Sqlite>,
+    {
+        let rows = sqlx::query!(
+            r#"SELECT id as "id!: Uuid"
+               FROM tasks
+               WHERE parent_task_id = $1"#,
+            parent_task_id
+        )
+        .fetch_all(executor)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| r.id).collect())
     }
 
     pub async fn find_relationships_for_workspace(

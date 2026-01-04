@@ -47,6 +47,7 @@ import { useHotkeysContext } from 'react-hotkeys-hook';
 import { cn } from '@/lib/utils';
 import type {
   TaskStatus,
+  TaskTrack,
   ExecutorProfileId,
   ImageResponse,
 } from 'shared/types';
@@ -78,6 +79,7 @@ type TaskFormValues = {
   title: string;
   description: string;
   status: TaskStatus;
+  track: TaskTrack;
   executorProfileId: ExecutorProfileId | null;
   repoBranches: RepoBranch[];
   autoStart: boolean;
@@ -127,57 +129,63 @@ const TaskFormDialogImpl = NiceModal.create<TaskFormDialogProps>((props) => {
   const defaultValues = useMemo((): TaskFormValues => {
     const baseProfile = system.config?.executor_profile || null;
 
-    switch (mode) {
-      case 'edit':
-        return {
-          title: props.task.title,
-          description: props.task.description || '',
-          status: props.task.status,
-          executorProfileId: baseProfile,
-          repoBranches: defaultRepoBranches,
-          autoStart: false,
-        };
+      switch (mode) {
+        case 'edit':
+          return {
+            title: props.task.title,
+            description: props.task.description || '',
+            status: props.task.status,
+            track: props.task.track || 'quick',
+            executorProfileId: baseProfile,
+            repoBranches: defaultRepoBranches,
+            autoStart: false,
+          };
 
-      case 'duplicate':
-        return {
-          title: props.initialTask.title,
-          description: props.initialTask.description || '',
-          status: 'todo',
-          executorProfileId: baseProfile,
-          repoBranches: defaultRepoBranches,
-          autoStart: true,
-        };
+        case 'duplicate':
+          return {
+            title: props.initialTask.title,
+            description: props.initialTask.description || '',
+            status: 'todo',
+            track: 'quick',
+            executorProfileId: baseProfile,
+            repoBranches: defaultRepoBranches,
+            autoStart: true,
+          };
 
-      case 'subtask':
-      case 'create':
-      default:
-        return {
-          title: '',
-          description: '',
-          status: 'todo',
-          executorProfileId: baseProfile,
-          repoBranches: defaultRepoBranches,
-          autoStart: true,
-        };
-    }
-  }, [mode, props, system.config?.executor_profile, defaultRepoBranches]);
+        case 'subtask':
+        case 'create':
+        default:
+          return {
+            title: '',
+            description: '',
+            status: 'todo',
+            track: 'quick',
+            executorProfileId: baseProfile,
+            repoBranches: defaultRepoBranches,
+            autoStart: true,
+          };
+      }
+    }, [mode, props, system.config?.executor_profile, defaultRepoBranches]);
 
   // Form submission handler
   const handleSubmit = async ({ value }: { value: TaskFormValues }) => {
     if (editMode) {
-      await updateTask.mutateAsync(
-        {
-          taskId: props.task.id,
-          data: {
-            title: value.title,
-            description: value.description,
-            status: value.status,
-            parent_workspace_id: null,
-            image_ids: images.length > 0 ? images.map((img) => img.id) : null,
+        await updateTask.mutateAsync(
+          {
+            taskId: props.task.id,
+            data: {
+              title: value.title,
+              description: value.description,
+              status: value.status,
+              track: null, // Preserve existing track by not updating
+              parent_workspace_id: null, // Preserve existing parent_workspace_id
+              parent_task_id: null, // Preserve existing parent_task_id
+              phase_key: null, // Preserve existing phase_key
+              image_ids: images.length > 0 ? images.map((img) => img.id) : null,
+            },
           },
-        },
-        { onSuccess: () => modal.remove() }
-      );
+          { onSuccess: () => modal.remove() }
+        );
     } else {
       const imageIds =
         newlyUploadedImageIds.length > 0 ? newlyUploadedImageIds : null;
@@ -186,8 +194,11 @@ const TaskFormDialogImpl = NiceModal.create<TaskFormDialogProps>((props) => {
         title: value.title,
         description: value.description,
         status: null,
+        track: value.track,
         parent_workspace_id:
           mode === 'subtask' ? props.parentTaskAttemptId : null,
+        parent_task_id: null,
+        phase_key: null,
         image_ids: imageIds,
         shared_task_id: null,
       };
@@ -458,6 +469,30 @@ const TaskFormDialogImpl = NiceModal.create<TaskFormDialogProps>((props) => {
                 />
               )}
             </form.Field>
+            {!editMode && mode !== 'subtask' && (
+              <form.Field name="track">
+                {(field) => (
+                  <div className="space-y-2 pt-3">
+                    <Label className="text-sm font-medium">Workflow</Label>
+                    <Select
+                      value={field.state.value}
+                      onValueChange={(value) =>
+                        field.handleChange(value as TaskTrack)
+                      }
+                      disabled={isSubmitting}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="quick">Quick</SelectItem>
+                        <SelectItem value="bmad">BMAD</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </form.Field>
+            )}
             {/* Edit mode status */}
             {editMode && (
               <form.Field name="status">

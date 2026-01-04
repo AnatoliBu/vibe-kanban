@@ -89,11 +89,12 @@ export function ActionsDropdown({
 
   const handleViewRelatedTasks = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!attempt?.id || !projectId) return;
+    if (!task?.id || !projectId) return;
     ViewRelatedTasksDialog.show({
-      attemptId: attempt.id,
+      taskId: task.id,
+      attemptId: attempt?.id,
       projectId,
-      attempt,
+      attempt: attempt ?? null,
       onNavigateToTask: (taskId: string) => {
         if (projectId) {
           navigate(`/projects/${projectId}/tasks/${taskId}/attempts/latest`);
@@ -195,12 +196,6 @@ export function ActionsDropdown({
               >
                 {t('actionsMenu.viewProcesses')}
               </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={!attempt?.id}
-                onClick={handleViewRelatedTasks}
-              >
-                {t('actionsMenu.viewRelatedTasks')}
-              </DropdownMenuItem>
               <DropdownMenuItem onClick={handleCreateNewAttempt}>
                 {t('actionsMenu.createNewAttempt')}
               </DropdownMenuItem>
@@ -249,6 +244,9 @@ export function ActionsDropdown({
                 {t('actionsMenu.stopShare')}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
+              <DropdownMenuItem disabled={!task} onClick={handleViewRelatedTasks}>
+                {t('actionsMenu.viewRelatedTasks')}
+              </DropdownMenuItem>
               <DropdownMenuItem
                 disabled={!projectId || !canEditShared}
                 onClick={handleEdit}
