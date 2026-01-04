@@ -763,8 +763,8 @@ export function ProjectTasks() {
             status: newStatus,
             track: null,
             parent_workspace_id: task.parent_workspace_id,
-            parent_task_id: null,
-            phase_key: null,
+            parent_task_id: task.parent_task_id,
+            phase_key: task.phase_key,
             image_ids: null,
           });
         } catch (err) {

@@ -779,6 +779,9 @@ impl TaskServer {
             None => None,
         };
 
+        // Note: track, parent_workspace_id, parent_task_id, and phase_key are set to None,
+        // which preserves their existing values since the backend update method
+        // only modifies fields that are explicitly provided (not None).
         let payload = UpdateTask {
             title,
             description: expanded_description,

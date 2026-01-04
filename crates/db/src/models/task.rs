@@ -284,6 +284,32 @@ ORDER BY t.created_at DESC"#,
         .await
     }
 
+    /// Find multiple tasks by their IDs in a single query
+    pub async fn find_by_ids<'e, E>(
+        executor: E,
+        ids: &[Uuid],
+    ) -> Result<Vec<Self>, sqlx::Error>
+    where
+        E: Executor<'e, Database = Sqlite>,
+    {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Use QueryBuilder for safe dynamic query construction
+        let mut query_builder = sqlx::QueryBuilder::<Sqlite>::new(
+            "SELECT id, project_id, title, description, status, track, parent_workspace_id, parent_task_id, phase_key, shared_task_id, created_at, updated_at FROM tasks WHERE id IN ("
+        );
+
+        let mut separated = query_builder.separated(", ");
+        for id in ids {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+
+        query_builder.build_query_as::<Task>().fetch_all(executor).await
+    }
+
     pub async fn find_by_shared_task_id<'e, E>(
         executor: E,
         shared_task_id: Uuid,
