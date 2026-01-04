@@ -426,12 +426,10 @@ pub async fn delete_task(
 
     // Delete children first, then the root parent task last
     // The root parent is the original task being deleted (stored in the Extension)
-    let mut delete_order: Vec<&Task> = Vec::new();
-    for t in &tasks_to_delete {
-        if t.id != task.id {
-            delete_order.push(t);
-        }
-    }
+    let mut delete_order: Vec<&Task> = tasks_to_delete
+        .iter()
+        .filter(|t| t.id != task.id)
+        .collect();
     delete_order.push(&task);
 
     for t in delete_order {
