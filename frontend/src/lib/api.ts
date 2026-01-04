@@ -392,6 +392,11 @@ export const tasksApi = {
     return handleApiResponse<Task>(response);
   },
 
+  getChildren: async (taskId: string): Promise<Task[]> => {
+    const response = await makeRequest(`/api/tasks/${taskId}/children`);
+    return handleApiResponse<Task[]>(response);
+  },
+
   create: async (data: CreateTask): Promise<Task> => {
     const response = await makeRequest(`/api/tasks`, {
       method: 'POST',

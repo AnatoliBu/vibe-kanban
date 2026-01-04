@@ -117,7 +117,8 @@ export const useProjectTasks = (projectId: string): UseProjectTasksResult => {
 
   const { tasks, tasksById, tasksByStatus } = useMemo(() => {
     const merged: Record<string, TaskWithAttemptStatus> = { ...localTasksById };
-    const byStatus: Record<TaskStatus, TaskWithAttemptStatus[]> = {
+    const isVisibleOnBoard = (task: TaskWithAttemptStatus) => !task.phase_key;
+    const byStatus: Record<TaskStatus, TaskWithAttemptStatus[]> = {       
       todo: [],
       inprogress: [],
       inreview: [],
@@ -126,14 +127,19 @@ export const useProjectTasks = (projectId: string): UseProjectTasksResult => {
     };
 
     Object.values(merged).forEach((task) => {
+      if (!isVisibleOnBoard(task)) {
+        return;
+      }
       byStatus[task.status]?.push(task);
     });
 
-    const sorted = Object.values(merged).sort(
+    const sorted = Object.values(merged)
+      .filter(isVisibleOnBoard)
+      .sort(
       (a, b) =>
         new Date(b.created_at as string).getTime() -
         new Date(a.created_at as string).getTime()
-    );
+      );
 
     (Object.values(byStatus) as TaskWithAttemptStatus[][]).forEach((list) => {
       list.sort(

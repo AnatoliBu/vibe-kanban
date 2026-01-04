@@ -34,6 +34,10 @@ pub struct CreateTaskRequest {
     pub title: String,
     #[schemars(description = "Optional description of the task")]
     pub description: Option<String>,
+    #[schemars(
+        description = "Optional workflow track. Valid values: 'quick', 'bmad', 'enterprise' (default: 'quick')."
+    )]
+    pub track: Option<String>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -500,8 +504,26 @@ impl TaskServer {
             project_id,
             title,
             description,
+            track,
         }): Parameters<CreateTaskRequest>,
     ) -> Result<CallToolResult, ErrorData> {
+        let track = if let Some(track) = track {
+            match track.as_str() {
+                "quick" => Some(db::models::task::TaskTrack::Quick),
+                "bmad" => Some(db::models::task::TaskTrack::Bmad),
+                "enterprise" => Some(db::models::task::TaskTrack::Enterprise),
+                other => {
+                    return Self::err(
+                        "Invalid track. Valid values: 'quick', 'bmad', 'enterprise'".to_string(),
+                        Some(other.to_string()),
+                    );
+                }
+            }
+        } else {
+            // Default to Quick track when no track is specified
+            Some(db::models::task::TaskTrack::Quick)
+        };
+
         // Expand @tagname references in description
         let expanded_description = match description {
             Some(desc) => Some(self.expand_tags(&desc).await),
@@ -514,11 +536,18 @@ impl TaskServer {
             .send_json(
                 self.client
                     .post(&url)
-                    .json(&CreateTask::from_title_description(
+                    .json(&CreateTask {
                         project_id,
                         title,
-                        expanded_description,
-                    )),
+                        description: expanded_description,
+                        status: None,
+                        track,
+                        parent_workspace_id: None,
+                        parent_task_id: None,
+                        phase_key: None,
+                        image_ids: None,
+                        shared_task_id: None,
+                    }),
             )
             .await
         {
@@ -754,7 +783,10 @@ impl TaskServer {
             title,
             description: expanded_description,
             status,
+            track: None,
             parent_workspace_id: None,
+            parent_task_id: None,
+            phase_key: None,
             image_ids: None,
         };
         let url = self.url(&format!("/api/tasks/{}", task_id));

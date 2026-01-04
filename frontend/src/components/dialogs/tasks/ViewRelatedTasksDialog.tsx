@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import NiceModal, { useModal } from '@ebay/nice-modal-react';
 import { defineModal } from '@/lib/modals';
 import { useTranslation } from 'react-i18next';
@@ -11,20 +12,22 @@ import { Button } from '@/components/ui/button';
 import { PlusIcon } from 'lucide-react';
 import { openTaskForm } from '@/lib/openTaskForm';
 import { useTaskRelationships } from '@/hooks/useTaskRelationships';
+import { useTaskChildren } from '@/hooks/useTaskChildren';
 import { DataTable, type ColumnDef } from '@/components/ui/table/data-table';
 import type { Task } from 'shared/types';
 import type { Workspace } from 'shared/types';
 
 export interface ViewRelatedTasksDialogProps {
-  attemptId: string;
+  taskId: string;
   projectId: string;
-  attempt: Workspace | null;
+  attemptId?: string;
+  attempt?: Workspace | null;
   onNavigateToTask?: (taskId: string) => void;
 }
 
 const ViewRelatedTasksDialogImpl =
   NiceModal.create<ViewRelatedTasksDialogProps>(
-    ({ attemptId, projectId, attempt, onNavigateToTask }) => {
+    ({ taskId, attemptId, projectId, attempt, onNavigateToTask }) => {
       const modal = useModal();
       const { t } = useTranslation('tasks');
       const {
@@ -34,14 +37,29 @@ const ViewRelatedTasksDialogImpl =
         refetch,
       } = useTaskRelationships(attemptId);
 
+      const {
+        data: taskChildren = [],
+        isLoading: isLoadingChildren,
+        isError: isErrorChildren,
+        refetch: refetchChildren,
+      } = useTaskChildren(taskId);
+
       // Combine parent and children into a single list of related tasks
-      const relatedTasks: Task[] = [];
-      if (relationships?.parent_task) {
-        relatedTasks.push(relationships.parent_task);
-      }
-      if (relationships?.children) {
-        relatedTasks.push(...relationships.children);
-      }
+      const relatedTasks = useMemo((): Task[] => {
+        const byId = new Map<string, Task>();
+        if (relationships?.parent_task) {
+          byId.set(relationships.parent_task.id, relationships.parent_task);
+        }
+        if (relationships?.children) {
+          for (const child of relationships.children) {
+            byId.set(child.id, child);
+          }
+        }
+        for (const child of taskChildren) {
+          byId.set(child.id, child);
+        }
+        return Array.from(byId.values());
+      }, [relationships?.children, relationships?.parent_task, taskChildren]);
 
       const taskColumns: ColumnDef<Task>[] = [
         {
@@ -122,25 +140,32 @@ const ViewRelatedTasksDialogImpl =
               <DialogTitle>{t('viewRelatedTasksDialog.title')}</DialogTitle>
             </DialogHeader>
 
-            <div className="p-4 max-h-[70vh] overflow-auto">
-              {isError && (
+              <div className="p-4 max-h-[70vh] overflow-auto">
+              {(isError || isErrorChildren) && (
                 <div className="py-8 text-center space-y-3">
                   <div className="text-sm text-destructive">
                     {t('viewRelatedTasksDialog.error')}
                   </div>
-                  <Button variant="outline" size="sm" onClick={() => refetch()}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      void refetch();
+                      void refetchChildren();
+                    }}
+                  >
                     {t('common:buttons.retry')}
                   </Button>
                 </div>
               )}
 
-              {!isError && (
+              {!(isError || isErrorChildren) && (
                 <DataTable
                   data={relatedTasks}
                   columns={taskColumns}
                   keyExtractor={(task) => task.id}
                   onRowClick={(task) => handleClickTask(task.id)}
-                  isLoading={isLoading}
+                  isLoading={isLoading || isLoadingChildren}
                   emptyState={t('viewRelatedTasksDialog.empty')}
                   headerContent={
                     <div className="w-full flex text-left">

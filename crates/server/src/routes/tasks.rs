@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::HashMap, collections::HashSet, path::PathBuf};
 
 use anyhow;
 use axum::{
@@ -16,7 +16,7 @@ use db::models::{
     image::TaskImage,
     project::{Project, ProjectError},
     repo::Repo,
-    task::{CreateTask, Task, TaskWithAttemptStatus, UpdateTask},
+    task::{CreateTask, Task, TaskTrack, TaskWithAttemptStatus, UpdateTask},
     workspace::{CreateWorkspace, Workspace},
     workspace_repo::{CreateWorkspaceRepo, WorkspaceRepo},
 };
@@ -26,6 +26,7 @@ use futures_util::{SinkExt, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use services::services::{
     container::ContainerService, share::ShareError, workspace_manager::WorkspaceManager,
+    task_routing::ensure_bmad_phases,
 };
 use sqlx::Error as SqlxError;
 use ts_rs::TS;
@@ -107,10 +108,24 @@ pub async fn get_task(
     Ok(ResponseJson(ApiResponse::success(task)))
 }
 
+pub async fn get_task_children(
+    Extension(task): Extension<Task>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<Vec<Task>>>, ApiError> {
+    let children = Task::find_children_by_task_id(&deployment.db().pool, task.id).await?;
+    Ok(ResponseJson(ApiResponse::success(children)))
+}
+
 pub async fn create_task(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<CreateTask>,
 ) -> Result<ResponseJson<ApiResponse<Task>>, ApiError> {
+    if payload.phase_key.is_some() && payload.parent_task_id.is_none() {
+        return Err(ApiError::BadRequest(
+            "phase_key requires parent_task_id".to_string(),
+        ));
+    }
+
     let id = Uuid::new_v4();
 
     tracing::debug!(
@@ -123,6 +138,10 @@ pub async fn create_task(
 
     if let Some(image_ids) = &payload.image_ids {
         TaskImage::associate_many_dedup(&deployment.db().pool, task.id, image_ids).await?;
+    }
+
+    if task.track != TaskTrack::Quick && task.parent_task_id.is_none() && task.phase_key.is_none() {
+        let _ = ensure_bmad_phases(&deployment.db().pool, &task).await?;
     }
 
     deployment
@@ -160,10 +179,19 @@ pub async fn create_task_and_start(
     let pool = &deployment.db().pool;
 
     let task_id = Uuid::new_v4();
+    if payload.task.phase_key.is_some() && payload.task.parent_task_id.is_none() {
+        return Err(ApiError::BadRequest(
+            "phase_key requires parent_task_id".to_string(),
+        ));
+    }
     let task = Task::create(pool, &payload.task, task_id).await?;
 
     if let Some(image_ids) = &payload.task.image_ids {
         TaskImage::associate_many_dedup(pool, task.id, image_ids).await?;
+    }
+
+    if task.track != TaskTrack::Quick && task.parent_task_id.is_none() && task.phase_key.is_none() {
+        let _ = ensure_bmad_phases(pool, &task).await?;
     }
 
     deployment
@@ -314,38 +342,78 @@ pub async fn delete_task(
 ) -> Result<(StatusCode, ResponseJson<ApiResponse<()>>), ApiError> {
     ensure_shared_task_auth(&task, &deployment).await?;
 
-    // Validate no running execution processes
-    if deployment
-        .container()
-        .has_running_processes(task.id)
-        .await?
-    {
-        return Err(ApiError::Conflict("Task has running execution processes. Please wait for them to complete or stop them first.".to_string()));
-    }
-
     let pool = &deployment.db().pool;
 
+    // Discover task-level children (e.g., BMAD phases) and delete them too.
+    // We gather all descendants to support future multi-level nesting.
+    let mut descendant_ids: Vec<Uuid> = Vec::new();
+    let mut visited: HashSet<Uuid> = HashSet::new();
+    let mut stack: Vec<Uuid> = vec![task.id];
+    while let Some(current_id) = stack.pop() {
+        let child_ids = Task::find_child_ids_by_task_id(pool, current_id).await?;
+        for child_id in child_ids {
+            if visited.insert(child_id) {
+                stack.push(child_id);
+                descendant_ids.push(child_id);
+            }
+        }
+    }
+
+    let mut tasks_to_delete: Vec<Task> = Vec::with_capacity(descendant_ids.len() + 1);
+    tasks_to_delete.push(task.clone());
+    for child_id in &descendant_ids {
+        let child = Task::find_by_id(pool, *child_id)
+            .await?
+            .ok_or(ApiError::Database(SqlxError::RowNotFound))?;
+        ensure_shared_task_auth(&child, &deployment).await?;
+        tasks_to_delete.push(child);
+    }
+
+    for t in &tasks_to_delete {
+        if deployment.container().has_running_processes(t.id).await? {
+            return Err(ApiError::Conflict(format!(
+                "Task {} has running execution processes. Please wait for them to complete or stop them first.",
+                t.id
+            )));
+        }
+    }
+
     // Gather task attempts data needed for background cleanup
-    let attempts = Workspace::fetch_all(pool, Some(task.id))
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to fetch task attempts for task {}: {}", task.id, e);
-            ApiError::Workspace(e)
-        })?;
+    let mut attempts_by_task: HashMap<Uuid, Vec<Workspace>> = HashMap::new();
+    let mut workspace_dirs: Vec<PathBuf> = Vec::new();
+    let mut repositories_by_id: HashMap<Uuid, Repo> = HashMap::new();
 
-    let repositories = WorkspaceRepo::find_unique_repos_for_task(pool, task.id).await?;
+    for t in &tasks_to_delete {
+        let attempts = Workspace::fetch_all(pool, Some(t.id))
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to fetch task attempts for task {}: {}", t.id, e);
+                ApiError::Workspace(e)
+            })?;
 
-    // Collect workspace directories that need cleanup
-    let workspace_dirs: Vec<PathBuf> = attempts
-        .iter()
-        .filter_map(|attempt| attempt.container_ref.as_ref().map(PathBuf::from))
-        .collect();
+        workspace_dirs.extend(
+            attempts
+                .iter()
+                .filter_map(|attempt| attempt.container_ref.as_ref().map(PathBuf::from)),
+        );
 
-    if let Some(shared_task_id) = task.shared_task_id {
-        let Ok(publisher) = deployment.share_publisher() else {
-            return Err(ShareError::MissingConfig("share publisher unavailable").into());
-        };
-        publisher.delete_shared_task(shared_task_id).await?;
+        attempts_by_task.insert(t.id, attempts);
+
+        let repos = WorkspaceRepo::find_unique_repos_for_task(pool, t.id).await?;
+        for repo in repos {
+            repositories_by_id.entry(repo.id).or_insert(repo);
+        }
+    }
+
+    let repositories: Vec<Repo> = repositories_by_id.into_values().collect();
+
+    for t in &tasks_to_delete {
+        if let Some(shared_task_id) = t.shared_task_id {
+            let Ok(publisher) = deployment.share_publisher() else {
+                return Err(ShareError::MissingConfig("share publisher unavailable").into());
+            };
+            publisher.delete_shared_task(shared_task_id).await?;
+        }
     }
 
     // Use a transaction to ensure atomicity: either all operations succeed or all are rolled back
@@ -354,17 +422,24 @@ pub async fn delete_task(
     // Nullify parent_workspace_id for all child tasks before deletion
     // This breaks parent-child relationships to avoid foreign key constraint violations
     let mut total_children_affected = 0u64;
-    for attempt in &attempts {
-        let children_affected =
-            Task::nullify_children_by_workspace_id(&mut *tx, attempt.id).await?;
-        total_children_affected += children_affected;
-    }
 
-    // Delete task from database (FK CASCADE will handle task_attempts)
-    let rows_affected = Task::delete(&mut *tx, task.id).await?;
+    let mut delete_order: Vec<&Task> = tasks_to_delete.iter().skip(1).collect();
+    delete_order.push(&tasks_to_delete[0]);
 
-    if rows_affected == 0 {
-        return Err(ApiError::Database(SqlxError::RowNotFound));
+    for t in delete_order {
+        if let Some(attempts) = attempts_by_task.get(&t.id) {
+            for attempt in attempts {
+                let children_affected =
+                    Task::nullify_children_by_workspace_id(&mut *tx, attempt.id).await?;
+                total_children_affected += children_affected;
+            }
+        }
+
+        // Delete task from database (FK CASCADE will handle workspaces/sessions/etc)
+        let rows_affected = Task::delete(&mut *tx, t.id).await?;
+        if rows_affected == 0 {
+            return Err(ApiError::Database(SqlxError::RowNotFound));
+        }
     }
 
     // Commit the transaction - if this fails, all changes are rolled back
@@ -384,7 +459,8 @@ pub async fn delete_task(
             serde_json::json!({
                 "task_id": task.id.to_string(),
                 "project_id": task.project_id.to_string(),
-                "attempt_count": attempts.len(),
+                "attempt_count": attempts_by_task.get(&task.id).map(|a| a.len()).unwrap_or(0),
+                "task_level_children_deleted": descendant_ids.len(),
             }),
         )
         .await;
@@ -468,6 +544,7 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
 
     let task_id_router = Router::new()
         .route("/", get(get_task))
+        .route("/children", get(get_task_children))
         .merge(task_actions_router)
         .layer(from_fn_with_state(deployment.clone(), load_task_middleware));
 
