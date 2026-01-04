@@ -135,7 +135,7 @@ const TaskFormDialogImpl = NiceModal.create<TaskFormDialogProps>((props) => {
             title: props.task.title,
             description: props.task.description || '',
             status: props.task.status,
-            track: 'quick',
+            track: props.task.track || 'quick',
             executorProfileId: baseProfile,
             repoBranches: defaultRepoBranches,
             autoStart: false,
@@ -177,10 +177,10 @@ const TaskFormDialogImpl = NiceModal.create<TaskFormDialogProps>((props) => {
               title: value.title,
               description: value.description,
               status: value.status,
-              track: null,
-              parent_workspace_id: null,
-              parent_task_id: null,
-              phase_key: null,
+              track: null, // Preserve existing track by not updating
+              parent_workspace_id: null, // Preserve existing parent_workspace_id
+              parent_task_id: null, // Preserve existing parent_task_id
+              phase_key: null, // Preserve existing phase_key
               image_ids: images.length > 0 ? images.map((img) => img.id) : null,
             },
           },

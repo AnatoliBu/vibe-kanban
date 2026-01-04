@@ -141,7 +141,7 @@ pub async fn create_task(
     }
 
     if task.track != TaskTrack::Quick && task.parent_task_id.is_none() && task.phase_key.is_none() {
-        let _ = ensure_bmad_phases(&deployment.db().pool, &task).await?;
+        ensure_bmad_phases(&deployment.db().pool, &task).await?;
     }
 
     deployment
@@ -191,7 +191,7 @@ pub async fn create_task_and_start(
     }
 
     if task.track != TaskTrack::Quick && task.parent_task_id.is_none() && task.phase_key.is_none() {
-        let _ = ensure_bmad_phases(pool, &task).await?;
+        ensure_bmad_phases(pool, &task).await?;
     }
 
     deployment
@@ -359,14 +359,15 @@ pub async fn delete_task(
         }
     }
 
+    // Fetch all descendant tasks in a single query to avoid N+1 problem
     let mut tasks_to_delete: Vec<Task> = Vec::with_capacity(descendant_ids.len() + 1);
     tasks_to_delete.push(task.clone());
-    for child_id in &descendant_ids {
-        let child = Task::find_by_id(pool, *child_id)
-            .await?
-            .ok_or(ApiError::Database(SqlxError::RowNotFound))?;
-        ensure_shared_task_auth(&child, &deployment).await?;
-        tasks_to_delete.push(child);
+    if !descendant_ids.is_empty() {
+        let children = Task::find_by_ids(pool, &descendant_ids).await?;
+        for child in children {
+            ensure_shared_task_auth(&child, &deployment).await?;
+            tasks_to_delete.push(child);
+        }
     }
 
     for t in &tasks_to_delete {
@@ -423,8 +424,15 @@ pub async fn delete_task(
     // This breaks parent-child relationships to avoid foreign key constraint violations
     let mut total_children_affected = 0u64;
 
-    let mut delete_order: Vec<&Task> = tasks_to_delete.iter().skip(1).collect();
-    delete_order.push(&tasks_to_delete[0]);
+    // Delete children first, then the root parent task last
+    // The root parent is the original task being deleted (stored in the Extension)
+    let mut delete_order: Vec<&Task> = Vec::new();
+    for t in &tasks_to_delete {
+        if t.id != task.id {
+            delete_order.push(t);
+        }
+    }
+    delete_order.push(&task);
 
     for t in delete_order {
         if let Some(attempts) = attempts_by_task.get(&t.id) {
