@@ -228,6 +228,14 @@
           "model": "glm-4.6"
         }
       }
+    },
+    "CUSTOM": {
+      "DEFAULT": {
+        "CUSTOM": {
+          "command": "sh -c \"echo 'ERROR: Configure your custom CLI agent in crates/executors/default_profiles.json' >&2; exit 1\"",
+          "prompt_mode": "STDIN"
+        }
+      }
     }
   }
 }

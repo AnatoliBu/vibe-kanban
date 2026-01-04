@@ -19,7 +19,7 @@ use crate::{
     env::ExecutionEnv,
     executors::{
         amp::Amp, claude::ClaudeCode, codex::Codex, copilot::Copilot, cursor::CursorAgent,
-        droid::Droid, gemini::Gemini, opencode::Opencode, qwen::QwenCode,
+        custom::Custom, droid::Droid, gemini::Gemini, opencode::Opencode, qwen::QwenCode,
     },
     mcp_config::McpConfig,
 };
@@ -30,6 +30,7 @@ pub mod claude;
 pub mod codex;
 pub mod copilot;
 pub mod cursor;
+pub mod custom;
 pub mod droid;
 pub mod gemini;
 pub mod opencode;
@@ -100,6 +101,7 @@ pub enum CodingAgent {
     QwenCode,
     Copilot,
     Droid,
+    Custom,
 }
 
 impl CodingAgent {
@@ -167,6 +169,9 @@ impl CodingAgent {
             ],
             Self::CursorAgent(_) => vec![BaseAgentCapability::SetupHelper],
             Self::Copilot(_) => vec![],
+            // Custom agents with ACP enabled support session fork
+            Self::Custom(c) if c.acp => vec![BaseAgentCapability::SessionFork],
+            Self::Custom(_) => vec![],
         }
     }
 }
