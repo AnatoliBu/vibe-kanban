@@ -51,7 +51,8 @@ mod tests {
     async fn setup_test_db() -> SqlitePool {
         let pool = SqlitePool::connect(":memory:").await.unwrap();
 
-        // Run migrations - note: using relative path from the services crate
+        // Run migrations - path is relative to the services crate root
+        // (crates/services/../db/migrations = crates/db/migrations)
         sqlx::migrate!("../db/migrations")
             .run(&pool)
             .await

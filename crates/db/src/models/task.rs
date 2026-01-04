@@ -296,21 +296,18 @@ ORDER BY t.created_at DESC"#,
             return Ok(Vec::new());
         }
 
-        // Build a query with the appropriate number of placeholders
-        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let query = format!(
-            r#"SELECT id, project_id, title, description, status, track, parent_workspace_id, parent_task_id, phase_key, shared_task_id, created_at, updated_at
-               FROM tasks
-               WHERE id IN ({})"#,
-            placeholders
+        // Use QueryBuilder for safe dynamic query construction
+        let mut query_builder = sqlx::QueryBuilder::<Sqlite>::new(
+            "SELECT id, project_id, title, description, status, track, parent_workspace_id, parent_task_id, phase_key, shared_task_id, created_at, updated_at FROM tasks WHERE id IN ("
         );
 
-        let mut query_builder = sqlx::query_as::<_, Task>(&query);
+        let mut separated = query_builder.separated(", ");
         for id in ids {
-            query_builder = query_builder.bind(id);
+            separated.push_bind(id);
         }
+        separated.push_unseparated(")");
 
-        query_builder.fetch_all(executor).await
+        query_builder.build_query_as::<Task>().fetch_all(executor).await
     }
 
     pub async fn find_by_shared_task_id<'e, E>(
